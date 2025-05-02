@@ -541,7 +541,7 @@ class _MapPageState extends State<MapPage> {
                       child: Text(
                         'File: ${_selectedFile!.name}',
                         style: const TextStyle(fontWeight: FontWeight.bold),
-                        ovegit rflow: TextOverflow.ellipsis,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
