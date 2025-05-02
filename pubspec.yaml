@@ -66,6 +66,12 @@ flutter:
   assets:
     - assets/map_data/
     - assets/map_data/OFC_Layer_LayerToKML.kmz
+    - assets/map_data/Culvert_Bridge_Layer_LayerTo.kmz
+    - assets/map_data/FPOI_Layer_LayerToKML.kmz
+    - assets/map_data/GP_Layer_LayerToKML.kmz
+    - assets/map_data/olt_LayerToKML.kmz
+    - assets/map_data/Span_Layer_LayerToKML.kmz
+    - assets/map_data/Structure_MH_Layer_LayerToKM.kmz
   # assets:
   #   - assets/map_data/OFC_Layer_LayerToKML.kmz
 

@@ -7,12 +7,11 @@ import 'package:xml/xml.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'dart:io';
 import 'dart:async';
-import 'dart:typed_data'; // Added import for ByteData
-import 'package:flutter/services.dart' show rootBundle; // Added for asset loading
-import 'dart:math'; // Added for min function
+import 'dart:typed_data';
+import 'package:flutter/services.dart' show rootBundle;
+import 'dart:math';
 
 void main() {
-  // Ensure Flutter is initialized
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
@@ -23,7 +22,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'KMZ Map Viewer',
+      title: 'Multi-Layer KMZ Map Viewer',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
@@ -31,6 +30,23 @@ class MyApp extends StatelessWidget {
       home: const MapPage(),
     );
   }
+}
+
+class LayerData {
+  final String name;
+  final String assetPath;
+  bool isVisible;
+  Set<Polygon> polygons = {};
+  Set<Polyline> polylines = {};
+  Set<Marker> markers = {};
+  Color color;
+
+  LayerData({
+    required this.name,
+    required this.assetPath,
+    this.isVisible = false,
+    this.color = Colors.blue,
+  });
 }
 
 class MapPage extends StatefulWidget {
@@ -42,15 +58,82 @@ class MapPage extends StatefulWidget {
 
 class _MapPageState extends State<MapPage> {
   final ImagePicker _picker = ImagePicker();
-  XFile? _selectedFile;
   bool _isLoading = false;
   GoogleMapController? _mapController;
-  Set<Polygon> _polygons = {};
-  Set<Polyline> _polylines = {};
-  Set<Marker> _markers = {};
   bool _permissionsGranted = false;
+  bool _layersPanelOpen = false;
   
-  // Default camera position (can be changed to your desired location)
+  // All available map layers
+  final List<LayerData> _layers = [
+    LayerData(
+      name: 'Culvert Bridge Layer',
+      assetPath: 'assets/map_data/Culvert_Bridge_Layer_LayerTo.kmz',
+      color: Colors.blue,
+    ),
+    LayerData(
+      name: 'FPOI Layer',
+      assetPath: 'assets/map_data/FPOI_Layer_LayerToKML.kmz',
+      color: Colors.red,
+    ),
+    LayerData(
+      name: 'GP Layer',
+      assetPath: 'assets/map_data/GP_Layer_LayerToKML.kmz',
+      color: Colors.green,
+    ),
+    LayerData(
+      name: 'OFC Layer',
+      assetPath: 'assets/map_data/OFC_Layer_LayerToKML.kmz',
+      color: Colors.orange,
+    ),
+    LayerData(
+      name: 'Alt Layer',
+      assetPath: 'assets/map_data/olt_LayerToKML.kmz',
+      color: Colors.purple,
+    ),
+    LayerData(
+      name: 'Span Layer',
+      assetPath: 'assets/map_data/Span_Layer_LayerToKML.kmz',
+      color: Colors.brown,
+    ),
+    LayerData(
+      name: 'Structure MH Layer',
+      assetPath: 'assets/map_data/Structure_MH_Layer_LayerToKM.kmz',
+      color: Colors.teal,
+    ),
+  ];
+  
+  // Computed sets of visible polygons, polylines, and markers
+  Set<Polygon> get _visiblePolygons {
+    final result = <Polygon>{};
+    for (final layer in _layers) {
+      if (layer.isVisible) {
+        result.addAll(layer.polygons);
+      }
+    }
+    return result;
+  }
+  
+  Set<Polyline> get _visiblePolylines {
+    final result = <Polyline>{};
+    for (final layer in _layers) {
+      if (layer.isVisible) {
+        result.addAll(layer.polylines);
+      }
+    }
+    return result;
+  }
+  
+  Set<Marker> get _visibleMarkers {
+    final result = <Marker>{};
+    for (final layer in _layers) {
+      if (layer.isVisible) {
+        result.addAll(layer.markers);
+      }
+    }
+    return result;
+  }
+  
+  // Default camera position
   final CameraPosition _initialCameraPosition = const CameraPosition(
     target: LatLng(37.42796133580664, -122.085749655962),
     zoom: 14.0,
@@ -59,22 +142,20 @@ class _MapPageState extends State<MapPage> {
   @override
   void initState() {
     super.initState();
-    // Request permissions when the app starts
     _requestPermissions();
     
-    // Load bundled KMZ regardless of permissions (we'll check inside the method)
+    // Load all layers with a slight delay to ensure initialization
     Future.delayed(const Duration(seconds: 1), () {
-      _loadBundledKMZ();
+      _loadAllLayers();
     });
   }
 
   Future<void> _requestPermissions() async {
     try {
-      // Request multiple permissions at once
       Map<Permission, PermissionStatus> statuses = await [
         Permission.location,
-        Permission.storage,  // For file access
-        Permission.camera,   // For picking media
+        Permission.storage,
+        Permission.camera,
       ].request();
       
       bool allGranted = true;
@@ -88,10 +169,7 @@ class _MapPageState extends State<MapPage> {
         _permissionsGranted = allGranted;
       });
       
-      if (allGranted) {
-        // Try to load bundled KMZ if permissions are granted
-        _loadBundledKMZ();
-      } else {
+      if (!allGranted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Some permissions were denied. App functionality may be limited.'),
@@ -104,6 +182,67 @@ class _MapPageState extends State<MapPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error requesting permissions: $e')),
       );
+    }
+  }
+
+  Future<void> _loadAllLayers() async {
+    setState(() {
+      _isLoading = true;
+    });
+    
+    for (final layer in _layers) {
+      await _loadLayerFromAssets(layer);
+    }
+    
+    setState(() {
+      _isLoading = false;
+      // Enable all layers by default
+      for (var layer in _layers) {
+        layer.isVisible = true;
+      }
+    });
+    
+    // Force map update and zoom to visible features
+    _forceMapUpdate();
+  }
+
+  Future<void> _loadLayerFromAssets(LayerData layer) async {
+    try {
+      print("Loading layer: ${layer.name} from ${layer.assetPath}");
+      
+      // Get app directory path
+      final directory = await getApplicationDocumentsDirectory();
+      final fileName = layer.assetPath.split('/').last;
+      final filePath = '${directory.path}/$fileName';
+      
+      // Check if file exists first, if not, copy from assets
+      final file = File(filePath);
+      if (!await file.exists()) {
+        print("File doesn't exist, copying from assets...");
+        try {
+          // Load from assets using rootBundle
+          final data = await rootBundle.load(layer.assetPath);
+          
+          // Write the file to the documents directory
+          await file.writeAsBytes(
+            data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+          );
+          print("File copied successfully to: $filePath");
+        } catch (e) {
+          print('Error copying KMZ file for layer ${layer.name}: $e');
+          return;
+        }
+      }
+      
+      // Now process the file
+      if (await file.exists()) {
+        print("Processing file for layer ${layer.name} at: $filePath");
+        await _processKMZFile(filePath, layer);
+      } else {
+        print("File still doesn't exist after copy attempt for layer ${layer.name}");
+      }
+    } catch (e) {
+      print('Error loading layer ${layer.name}: $e');
     }
   }
 
@@ -123,15 +262,25 @@ class _MapPageState extends State<MapPage> {
       
       if (pickedFile != null) {
         setState(() {
-          _selectedFile = pickedFile;
           _isLoading = true;
         });
         
-        await _processKMZFile(pickedFile.path);
+        // Create a new custom layer for the picked file
+        final customLayer = LayerData(
+          name: 'Custom Layer (${pickedFile.name})',
+          assetPath: pickedFile.path,
+          isVisible: true,
+          color: Colors.cyan,
+        );
+        
+        await _processKMZFile(pickedFile.path, customLayer);
         
         setState(() {
+          _layers.add(customLayer);
           _isLoading = false;
         });
+        
+        _forceMapUpdate();
       }
     } catch (e) {
       setState(() {
@@ -144,70 +293,9 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  Future<void> _loadBundledKMZ() async {
+  Future<void> _processKMZFile(String filePath, LayerData layer) async {
     try {
-      setState(() {
-        _isLoading = true;
-      });
-      
-      // Get app directory path
-      final directory = await getApplicationDocumentsDirectory();
-      final filePath = '${directory.path}/OFC_Layer_LayerToKML.kmz';
-      
-      // Check if file exists first, if not, copy from assets
-      final file = File(filePath);
-      if (!await file.exists()) {
-        print("File doesn't exist, copying from assets...");
-        try {
-          // Load from assets using rootBundle
-          final data = await rootBundle.load('assets/map_data/OFC_Layer_LayerToKML.kmz');
-          
-          // Write the file to the documents directory
-          await file.writeAsBytes(
-            data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-          );
-          print("File copied successfully to: $filePath");
-        } catch (e) {
-          print('Error copying bundled KMZ file: $e');
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Error copying bundled KMZ file: $e')),
-          );
-          setState(() {
-            _isLoading = false;
-          });
-          return;
-        }
-      }
-      
-      // Now process the file
-      if (await file.exists()) {
-        print("Processing file at: $filePath");
-        await _processKMZFile(filePath);
-      } else {
-        print("File still doesn't exist after copy attempt");
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Bundled KMZ file not found')),
-        );
-      }
-      
-      setState(() {
-        _isLoading = false;
-      });
-    } catch (e) {
-      print('Error loading bundled KMZ file: $e');
-      setState(() {
-        _isLoading = false;
-      });
-      
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error loading bundled KMZ file: $e')),
-      );
-    }
-  }
-
-  Future<void> _processKMZFile(String filePath) async {
-    try {
-      print("Starting to process KMZ file: $filePath");
+      print("Starting to process KMZ file for layer ${layer.name}: $filePath");
       // Read KMZ file
       final file = File(filePath);
       final bytes = await file.readAsBytes();
@@ -217,11 +305,6 @@ class _MapPageState extends State<MapPage> {
       final archive = ZipDecoder().decodeBytes(bytes);
       print("Archive decoded, contains ${archive.files.length} files");
       
-      // List all files in archive for debugging
-      for (var file in archive.files) {
-        print("Archive contains: ${file.name}");
-      }
-      
       // Find the KML file (usually doc.kml)
       ArchiveFile? kmlFile;
       try {
@@ -229,39 +312,30 @@ class _MapPageState extends State<MapPage> {
                  archive.files.firstWhere((file) => file.name.toLowerCase().endsWith('.kml'));
         print("Found KML file: ${kmlFile.name}");
       } catch (e) {
-        print("No KML file found in archive");
-        throw Exception('No KML file found in the KMZ archive');
+        print("No KML file found in archive for layer ${layer.name}");
+        return;
       }
       
       if (kmlFile == null) {
-        print("KML file is null");
-        throw Exception('No KML file found in the KMZ archive');
+        print("KML file is null for layer ${layer.name}");
+        return;
       }
       
       // Get KML content
       final kmlContent = String.fromCharCodes(kmlFile.content as List<int>);
       print("KML content length: ${kmlContent.length} characters");
-      print("KML content preview: ${kmlContent.substring(0, min(200, kmlContent.length))}...");
       
-      // Parse KML
-      await _parseKML(kmlContent);
-      
-      // Force map update
-      _forceMapUpdate();
-      
-      print("KMZ processing completed");
+      // Parse KML for this layer
+      await _parseKML(kmlContent, layer);
       
     } catch (e) {
-      print('Error processing KMZ file: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error processing KMZ file: $e')),
-      );
+      print('Error processing KMZ file for layer ${layer.name}: $e');
     }
   }
 
-  Future<void> _parseKML(String kmlContent) async {
+  Future<void> _parseKML(String kmlContent, LayerData layer) async {
     try {
-      print("Starting to parse KML content...");
+      print("Starting to parse KML content for layer ${layer.name}...");
       final document = XmlDocument.parse(kmlContent);
       
       // Temporary collections
@@ -271,27 +345,24 @@ class _MapPageState extends State<MapPage> {
       
       // Process Placemarks
       final placemarks = document.findAllElements('Placemark');
-      print("Found ${placemarks.length} placemarks");
+      print("Found ${placemarks.length} placemarks in layer ${layer.name}");
       
       for (final placemark in placemarks) {
         // Get name if available
         final nameElement = placemark.findElements('name').firstOrNull;
         final name = nameElement?.innerText ?? 'Unnamed';
-        print("Processing placemark: $name");
         
         // Process Polygons
         final polygonElements = placemark.findAllElements('Polygon');
-        print("Found ${polygonElements.length} polygons in placemark");
         for (final polygonElement in polygonElements) {
           final coordinates = _getCoordinatesFromPolygon(polygonElement);
-          print("Polygon coordinates count: ${coordinates.length}");
           if (coordinates.isNotEmpty) {
             polygons.add(
               Polygon(
-                polygonId: PolygonId('polygon_${polygons.length}'),
+                polygonId: PolygonId('${layer.name}_polygon_${polygons.length}'),
                 points: coordinates,
-                fillColor: Colors.blue.withOpacity(0.3),
-                strokeColor: Colors.blue,
+                fillColor: layer.color.withOpacity(0.3),
+                strokeColor: layer.color,
                 strokeWidth: 2,
               ),
             );
@@ -300,16 +371,14 @@ class _MapPageState extends State<MapPage> {
         
         // Process LineStrings (Polylines)
         final lineElements = placemark.findAllElements('LineString');
-        print("Found ${lineElements.length} linestrings in placemark");
         for (final lineElement in lineElements) {
           final coordinates = _getCoordinatesFromElement(lineElement);
-          print("LineString coordinates count: ${coordinates.length}");
           if (coordinates.isNotEmpty) {
             polylines.add(
               Polyline(
-                polylineId: PolylineId('polyline_${polylines.length}'),
+                polylineId: PolylineId('${layer.name}_polyline_${polylines.length}'),
                 points: coordinates,
-                color: Colors.red,
+                color: layer.color,
                 width: 3,
               ),
             );
@@ -318,35 +387,51 @@ class _MapPageState extends State<MapPage> {
         
         // Process Points (Markers)
         final pointElements = placemark.findAllElements('Point');
-        print("Found ${pointElements.length} points in placemark");
         for (final pointElement in pointElements) {
           final coordinates = _getCoordinatesFromElement(pointElement);
-          print("Point coordinates count: ${coordinates.length}");
           if (coordinates.isNotEmpty) {
             markers.add(
               Marker(
-                markerId: MarkerId('marker_${markers.length}'),
+                markerId: MarkerId('${layer.name}_marker_${markers.length}'),
                 position: coordinates.first,
-                infoWindow: InfoWindow(title: name),
+                infoWindow: InfoWindow(title: name, snippet: layer.name),
+                icon: BitmapDescriptor.defaultMarkerWithHue(
+                  _getHueForColor(layer.color)
+                ),
               ),
             );
           }
         }
       }
       
-      print("Setting state with: ${polygons.length} polygons, ${polylines.length} polylines, ${markers.length} markers");
+      print("Parsed for layer ${layer.name}: ${polygons.length} polygons, ${polylines.length} polylines, ${markers.length} markers");
+      
+      // Update the layer with the parsed geometry
       setState(() {
-        _polygons = polygons;
-        _polylines = polylines;
-        _markers = markers;
+        layer.polygons = polygons;
+        layer.polylines = polylines;
+        layer.markers = markers;
       });
       
     } catch (e) {
-      print('Error parsing KML content: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error parsing KML content: $e')),
-      );
+      print('Error parsing KML content for layer ${layer.name}: $e');
     }
+  }
+
+  // Convert Color to marker hue
+  double _getHueForColor(Color color) {
+    // Simplified approach, mapping some common colors to hues
+    if (color == Colors.red) return BitmapDescriptor.hueRed;
+    if (color == Colors.green) return BitmapDescriptor.hueGreen;
+    if (color == Colors.blue) return BitmapDescriptor.hueBlue;
+    if (color == Colors.orange) return BitmapDescriptor.hueOrange;
+    if (color == Colors.yellow) return BitmapDescriptor.hueYellow;
+    if (color == Colors.cyan) return BitmapDescriptor.hueCyan;
+    if (color == Colors.pink) return BitmapDescriptor.hueRose;
+    if (color == Colors.purple) return BitmapDescriptor.hueViolet;
+    
+    // Fallback to azure for other colors
+    return BitmapDescriptor.hueAzure;
   }
 
   List<LatLng> _getCoordinatesFromPolygon(XmlElement polygonElement) {
@@ -354,13 +439,11 @@ class _MapPageState extends State<MapPage> {
       // Find outer boundary
       final outerBoundary = polygonElement.findElements('outerBoundaryIs').firstOrNull;
       if (outerBoundary == null) {
-        print("No outerBoundaryIs element found");
         return [];
       }
       
       final linearRing = outerBoundary.findElements('LinearRing').firstOrNull;
       if (linearRing == null) {
-        print("No LinearRing element found");
         return [];
       }
       
@@ -375,23 +458,18 @@ class _MapPageState extends State<MapPage> {
     try {
       final coordinatesElement = element.findElements('coordinates').firstOrNull;
       if (coordinatesElement == null) {
-        print("No coordinates element found");
         return [];
       }
       
       final coordinatesText = coordinatesElement.innerText.trim();
       if (coordinatesText.isEmpty) {
-        print("Coordinates text is empty");
         return [];
       }
-      
-      print("Raw coordinates: ${coordinatesText.substring(0, min(100, coordinatesText.length))}...");
       
       final coordinates = <LatLng>[];
       
       // Parse coordinates (format: lon,lat,alt lon,lat,alt ...)
       final coordPairs = coordinatesText.split(' ');
-      print("Found ${coordPairs.length} coordinate pairs");
       
       for (final pair in coordPairs) {
         if (pair.trim().isEmpty) continue;
@@ -403,15 +481,10 @@ class _MapPageState extends State<MapPage> {
           
           if (lon != null && lat != null) {
             coordinates.add(LatLng(lat, lon));
-          } else {
-            print("Failed to parse lat/lon from: $pair");
           }
-        } else {
-          print("Invalid coordinate pair format: $pair");
         }
       }
       
-      print("Successfully parsed ${coordinates.length} coordinates");
       return coordinates;
     } catch (e) {
       print('Error parsing coordinates: $e');
@@ -419,39 +492,49 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
+  void _toggleLayerVisibility(int index) {
+    setState(() {
+      _layers[index].isVisible = !_layers[index].isVisible;
+    });
+    _forceMapUpdate();
+  }
+
   void _moveToFeatures() {
     if (_mapController == null) {
-      print("Cannot move to features: map controller is null");
       return;
     }
     
-    // Collect all points to calculate bounds
+    // Collect all points from visible layers to calculate bounds
     final List<LatLng> allPoints = [];
     
-    for (final polygon in _polygons) {
-      allPoints.addAll(polygon.points);
-    }
-    
-    for (final polyline in _polylines) {
-      allPoints.addAll(polyline.points);
-    }
-    
-    for (final marker in _markers) {
-      allPoints.add(marker.position);
+    for (final layer in _layers) {
+      if (layer.isVisible) {
+        for (final polygon in layer.polygons) {
+          allPoints.addAll(polygon.points);
+        }
+        
+        for (final polyline in layer.polylines) {
+          allPoints.addAll(polyline.points);
+        }
+        
+        for (final marker in layer.markers) {
+          allPoints.add(marker.position);
+        }
+      }
     }
     
     if (allPoints.isEmpty) {
-      print("No points to move to");
+      print("No visible features found to move the camera to");
       return;
     }
     
-    print("Moving camera to show ${allPoints.length} points");
+    print("Found ${allPoints.length} points across all visible layers");
     
     // Calculate bounds
-    double minLat = allPoints.first.latitude;
-    double maxLat = allPoints.first.latitude;
-    double minLng = allPoints.first.longitude;
-    double maxLng = allPoints.first.longitude;
+    double minLat = 90.0; // Start with extremes
+    double maxLat = -90.0;
+    double minLng = 180.0;
+    double maxLng = -180.0;
     
     for (final point in allPoints) {
       if (point.latitude < minLat) minLat = point.latitude;
@@ -460,6 +543,8 @@ class _MapPageState extends State<MapPage> {
       if (point.longitude > maxLng) maxLng = point.longitude;
     }
     
+    print("Calculated bounds: SW($minLat, $minLng), NE($maxLat, $maxLng)");
+    
     // Create bounds with padding
     final bounds = LatLngBounds(
       southwest: LatLng(minLat, minLng),
@@ -467,9 +552,26 @@ class _MapPageState extends State<MapPage> {
     );
     
     // Move camera to show all features with padding
-    _mapController!.animateCamera(
-      CameraUpdate.newLatLngBounds(bounds, 50),
-    );
+    try {
+      _mapController!.animateCamera(
+        CameraUpdate.newLatLngBounds(bounds, 50),
+      );
+      print("Camera updated to show all features");
+    } catch (e) {
+      print("Error updating camera: $e");
+      // Fallback - move to center of bounds
+      final centerLat = (minLat + maxLat) / 2;
+      final centerLng = (minLng + maxLng) / 2;
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(
+            target: LatLng(centerLat, centerLng),
+            zoom: 10.0,
+          ),
+        ),
+      );
+      print("Used fallback camera position to center of bounds");
+    }
   }
 
   void _forceMapUpdate() {
@@ -478,8 +580,13 @@ class _MapPageState extends State<MapPage> {
         // Force rebuild
       });
       // Move to features with a slight delay to ensure map is ready
-      Future.delayed(const Duration(milliseconds: 500), () {
+      Future.delayed(const Duration(milliseconds: 1000), () {
         _moveToFeatures();
+        
+        // Print visible features for debugging
+        print("Visible polygons: ${_visiblePolygons.length}");
+        print("Visible polylines: ${_visiblePolylines.length}");
+        print("Visible markers: ${_visibleMarkers.length}");
       });
     }
   }
@@ -489,12 +596,21 @@ class _MapPageState extends State<MapPage> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('KMZ Map Viewer'),
+        title: const Text('Multi-Layer KMZ Map Viewer'),
         actions: [
           IconButton(
             icon: const Icon(Icons.file_open),
             onPressed: _pickKMZFile,
             tooltip: 'Open KMZ File',
+          ),
+          IconButton(
+            icon: const Icon(Icons.layers),
+            onPressed: () {
+              setState(() {
+                _layersPanelOpen = !_layersPanelOpen;
+              });
+            },
+            tooltip: 'Toggle Layers Panel',
           ),
         ],
       ),
@@ -506,9 +622,9 @@ class _MapPageState extends State<MapPage> {
             myLocationButtonEnabled: true,
             myLocationEnabled: _permissionsGranted,
             zoomControlsEnabled: true,
-            polygons: _polygons,
-            polylines: _polylines,
-            markers: _markers,
+            polygons: _visiblePolygons,
+            polylines: _visiblePolylines,
+            markers: _visibleMarkers,
             onMapCreated: (controller) {
               setState(() {
                 _mapController = controller;
@@ -516,32 +632,64 @@ class _MapPageState extends State<MapPage> {
               print("Map controller created");
             },
           ),
-          if (_selectedFile != null)
+          if (_layersPanelOpen)
             Positioned(
-              bottom: 16,
-              left: 16,
-              right: 16,
+              top: 0,
+              right: 0,
+              bottom: 0,
+              width: 250,
               child: Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 8,
-                    ),
-                  ],
-                ),
-                child: Row(
+                color: Colors.white,
+                child: Column(
                   children: [
-                    const Icon(Icons.map, color: Colors.blue),
-                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      color: Theme.of(context).colorScheme.inversePrimary,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            'Map Layers',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close),
+                            onPressed: () {
+                              setState(() {
+                                _layersPanelOpen = false;
+                              });
+                            },
+                            tooltip: 'Close Panel',
+                          ),
+                        ],
+                      ),
+                    ),
                     Expanded(
-                      child: Text(
-                        'File: ${_selectedFile!.name}',
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                        overflow: TextOverflow.ellipsis,
+                      child: ListView.builder(
+                        itemCount: _layers.length,
+                        itemBuilder: (context, index) {
+                          final layer = _layers[index];
+                          return ListTile(
+                            leading: Icon(
+                              Icons.layers,
+                              color: layer.color,
+                            ),
+                            title: Text(layer.name),
+                            trailing: Switch(
+                              value: layer.isVisible,
+                              activeColor: layer.color,
+                              onChanged: (value) {
+                                _toggleLayerVisibility(index);
+                              },
+                            ),
+                            onTap: () {
+                              _toggleLayerVisibility(index);
+                            },
+                          );
+                        },
                       ),
                     ),
                   ],
@@ -557,10 +705,27 @@ class _MapPageState extends State<MapPage> {
             ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _pickKMZFile,
-        tooltip: 'Pick KMZ File',
-        child: const Icon(Icons.upload_file),
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            onPressed: _pickKMZFile,
+            tooltip: 'Pick KMZ File',
+            heroTag: 'pickFile',
+            child: const Icon(Icons.upload_file),
+          ),
+          const SizedBox(height: 16),
+          FloatingActionButton(
+            onPressed: () {
+              setState(() {
+                _layersPanelOpen = !_layersPanelOpen;
+              });
+            },
+            tooltip: 'Toggle Layers',
+            heroTag: 'toggleLayers',
+            child: const Icon(Icons.layers),
+          ),
+        ],
       ),
     );
   }
