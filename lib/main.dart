@@ -64,44 +64,43 @@ class _MapPageState extends State<MapPage> {
   bool _layersPanelOpen = false;
   
   // All available map layers
-  final List<LayerData> _layers = [
-    LayerData(
-      name: 'Culvert Bridge Layer',
-      assetPath: 'assets/map_data/Culvert_Bridge_Layer_LayerTo.kmz',
-      color: Colors.blue,
-    ),
-    LayerData(
-      name: 'FPOI Layer',
-      assetPath: 'assets/map_data/FPOI_Layer_LayerToKML.kmz',
-      color: Colors.red,
-    ),
-    LayerData(
-      name: 'GP Layer',
-      assetPath: 'assets/map_data/GP_Layer_LayerToKML.kmz',
-      color: Colors.green,
-    ),
-    LayerData(
-      name: 'OFC Layer',
-      assetPath: 'assets/map_data/OFC_Layer_LayerToKML.kmz',
-      color: Colors.orange,
-    ),
-    LayerData(
-      name: 'Alt Layer',
-      assetPath: 'assets/map_data/olt_LayerToKML.kmz',
-      color: Colors.purple,
-    ),
-    LayerData(
-      name: 'Span Layer',
-      assetPath: 'assets/map_data/Span_Layer_LayerToKML.kmz',
-      color: Colors.brown,
-    ),
-    LayerData(
-      name: 'Structure MH Layer',
-      assetPath: 'assets/map_data/Structure_MH_Layer_LayerToKM.kmz',
-      color: Colors.teal,
-    ),
+  final List<LayerData> _layers = [];
+
+  final List<Color> _colors = [
+    Colors.red,
+    Colors.blue,
+    Colors.green,
+    Colors.yellow,
+    Colors.purple,
+    Colors.orange,
+    Colors.teal,
+    Colors.pink,
+    Colors.amber,
+    Colors.indigo,
   ];
   
+  bool isColorUsed(Color colorToCheck, List<LayerData> layers) {
+    // Iterate through all layers and check if the color is used
+    for (var layer in layers) {
+      if (layer.color == colorToCheck) {
+        return true; // Color is already used
+      }
+    }
+
+    return false; // Color is not used
+  }
+
+  Color getUnusedColor(List<LayerData> layers) {
+    for (var color in _colors) {
+      if (!isColorUsed(color, layers)) {
+        return color; // Return the first unused color
+      }
+    }
+
+    // If all colors are used, return a fallback color or generate a random one
+    return Colors.grey; // Fallback color
+  }
+
   // Computed sets of visible polygons, polylines, and markers
   Set<Polygon> get _visiblePolygons {
     final result = <Polygon>{};
@@ -154,7 +153,7 @@ class _MapPageState extends State<MapPage> {
     try {
       Map<Permission, PermissionStatus> statuses = await [
         Permission.location,
-        Permission.storage,
+        Permission.photos,
         Permission.camera,
       ].request();
       
@@ -246,6 +245,19 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
+  String splitOnLastOccurrence(String input, String delimiter) {
+    // Check if the input string contains the delimiter
+    if (!input.contains(delimiter)) {
+      return input; // Simply return the original string if delimiter isn't found
+    }
+
+    // Find the last occurrence of the delimiter
+    final lastIndex = input.lastIndexOf(delimiter);
+
+    // Return the substring up to the last occurrence of the delimiter
+    return input.substring(0, lastIndex);
+  }
+
   Future<void> _pickKMZFile() async {
     if (!_permissionsGranted) {
       await _requestPermissions();
@@ -260,6 +272,8 @@ class _MapPageState extends State<MapPage> {
     try {
       final XFile? pickedFile = await _picker.pickMedia();
       
+      Color newColor = getUnusedColor(_layers);
+
       if (pickedFile != null) {
         setState(() {
           _isLoading = true;
@@ -267,10 +281,11 @@ class _MapPageState extends State<MapPage> {
         
         // Create a new custom layer for the picked file
         final customLayer = LayerData(
-          name: 'Custom Layer (${pickedFile.name})',
+          name:
+              splitOnLastOccurrence(pickedFile.name, "_").replaceAll("_", " "),
           assetPath: pickedFile.path,
           isVisible: true,
-          color: Colors.cyan,
+          color: newColor,
         );
         
         await _processKMZFile(pickedFile.path, customLayer);
