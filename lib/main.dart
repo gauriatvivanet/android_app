@@ -10,6 +10,7 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/services.dart' show rootBundle;
 import 'dart:math';
+import 'package:file_picker/file_picker.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -34,7 +35,7 @@ class MyApp extends StatelessWidget {
 
 class LayerData {
   final String name;
-  final String assetPath;
+  final String filePath;
   bool isVisible;
   Set<Polygon> polygons = {};
   Set<Polyline> polylines = {};
@@ -43,7 +44,7 @@ class LayerData {
 
   LayerData({
     required this.name,
-    required this.assetPath,
+    required this.filePath,
     this.isVisible = false,
     this.color = Colors.blue,
   });
@@ -57,50 +58,13 @@ class MapPage extends StatefulWidget {
 }
 
 class _MapPageState extends State<MapPage> {
-  final ImagePicker _picker = ImagePicker();
   bool _isLoading = false;
   GoogleMapController? _mapController;
   bool _permissionsGranted = false;
   bool _layersPanelOpen = false;
   
-  // All available map layers
-  final List<LayerData> _layers = [
-    LayerData(
-      name: 'Culvert Bridge Layer',
-      assetPath: 'assets/map_data/Culvert_Bridge_Layer_LayerTo.kmz',
-      color: Colors.blue,
-    ),
-    LayerData(
-      name: 'FPOI Layer',
-      assetPath: 'assets/map_data/FPOI_Layer_LayerToKML.kmz',
-      color: Colors.red,
-    ),
-    LayerData(
-      name: 'GP Layer',
-      assetPath: 'assets/map_data/GP_Layer_LayerToKML.kmz',
-      color: Colors.green,
-    ),
-    LayerData(
-      name: 'OFC Layer',
-      assetPath: 'assets/map_data/OFC_Layer_LayerToKML.kmz',
-      color: Colors.orange,
-    ),
-    LayerData(
-      name: 'Alt Layer',
-      assetPath: 'assets/map_data/olt_LayerToKML.kmz',
-      color: Colors.purple,
-    ),
-    LayerData(
-      name: 'Span Layer',
-      assetPath: 'assets/map_data/Span_Layer_LayerToKML.kmz',
-      color: Colors.brown,
-    ),
-    LayerData(
-      name: 'Structure MH Layer',
-      assetPath: 'assets/map_data/Structure_MH_Layer_LayerToKM.kmz',
-      color: Colors.teal,
-    ),
-  ];
+  // List to store uploaded map layers
+  final List<LayerData> _layers = [];
   
   // Computed sets of visible polygons, polylines, and markers
   Set<Polygon> get _visiblePolygons {
@@ -135,19 +99,14 @@ class _MapPageState extends State<MapPage> {
   
   // Default camera position
   final CameraPosition _initialCameraPosition = const CameraPosition(
-    target: LatLng(37.42796133580664, -122.085749655962),
-    zoom: 14.0,
+    target: LatLng(28.6139, 77.2090), // Default to New Delhi
+    zoom: 12.0,
   );
 
   @override
   void initState() {
     super.initState();
     _requestPermissions();
-    
-    // Load all layers with a slight delay to ensure initialization
-    Future.delayed(const Duration(seconds: 1), () {
-      _loadAllLayers();
-    });
   }
 
   Future<void> _requestPermissions() async {
@@ -185,68 +144,7 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  Future<void> _loadAllLayers() async {
-    setState(() {
-      _isLoading = true;
-    });
-    
-    for (final layer in _layers) {
-      await _loadLayerFromAssets(layer);
-    }
-    
-    setState(() {
-      _isLoading = false;
-      // Enable all layers by default
-      for (var layer in _layers) {
-        layer.isVisible = true;
-      }
-    });
-    
-    // Force map update and zoom to visible features
-    _forceMapUpdate();
-  }
-
-  Future<void> _loadLayerFromAssets(LayerData layer) async {
-    try {
-      print("Loading layer: ${layer.name} from ${layer.assetPath}");
-      
-      // Get app directory path
-      final directory = await getApplicationDocumentsDirectory();
-      final fileName = layer.assetPath.split('/').last;
-      final filePath = '${directory.path}/$fileName';
-      
-      // Check if file exists first, if not, copy from assets
-      final file = File(filePath);
-      if (!await file.exists()) {
-        print("File doesn't exist, copying from assets...");
-        try {
-          // Load from assets using rootBundle
-          final data = await rootBundle.load(layer.assetPath);
-          
-          // Write the file to the documents directory
-          await file.writeAsBytes(
-            data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
-          );
-          print("File copied successfully to: $filePath");
-        } catch (e) {
-          print('Error copying KMZ file for layer ${layer.name}: $e');
-          return;
-        }
-      }
-      
-      // Now process the file
-      if (await file.exists()) {
-        print("Processing file for layer ${layer.name} at: $filePath");
-        await _processKMZFile(filePath, layer);
-      } else {
-        print("File still doesn't exist after copy attempt for layer ${layer.name}");
-      }
-    } catch (e) {
-      print('Error loading layer ${layer.name}: $e');
-    }
-  }
-
-  Future<void> _pickKMZFile() async {
+  Future<void> _pickKMZFiles() async {
     if (!_permissionsGranted) {
       await _requestPermissions();
       if (!_permissionsGranted) {
@@ -258,39 +156,80 @@ class _MapPageState extends State<MapPage> {
     }
     
     try {
-      final XFile? pickedFile = await _picker.pickMedia();
+      setState(() {
+        _isLoading = true;
+      });
       
-      if (pickedFile != null) {
-        setState(() {
-          _isLoading = true;
-        });
+      // Use FilePicker to pick multiple KMZ files
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['kmz', 'kml'],
+        allowMultiple: true,
+      );
+      
+      if (result != null && result.files.isNotEmpty) {
+        // Process each selected file
+        for (final file in result.files) {
+          if (file.path != null) {
+            // Create a random color for this layer
+            final randomColor = _getRandomColor();
+            
+            // Create a new layer for this file
+            final newLayer = LayerData(
+              name: file.name,
+              filePath: file.path!,
+              isVisible: true,
+              color: randomColor,
+            );
+            
+            // Process the KMZ file
+            await _processKMZFile(file.path!, newLayer);
+            
+            // Add the layer to our list
+            setState(() {
+              _layers.add(newLayer);
+            });
+          }
+        }
         
-        // Create a new custom layer for the picked file
-        final customLayer = LayerData(
-          name: 'Custom Layer (${pickedFile.name})',
-          assetPath: pickedFile.path,
-          isVisible: true,
-          color: Colors.cyan,
-        );
-        
-        await _processKMZFile(pickedFile.path, customLayer);
-        
-        setState(() {
-          _layers.add(customLayer);
-          _isLoading = false;
-        });
-        
+        // Move the map to show the loaded features
         _forceMapUpdate();
       }
+      
+      setState(() {
+        _isLoading = false;
+      });
+      
     } catch (e) {
       setState(() {
         _isLoading = false;
       });
       
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error picking KMZ file: $e')),
+        SnackBar(content: Text('Error picking KMZ files: $e')),
       );
     }
+  }
+
+  // Generate a random color for a new layer
+  Color _getRandomColor() {
+    final random = Random();
+    final colorOptions = [
+      Colors.blue,
+      Colors.red,
+      Colors.green,
+      Colors.orange,
+      Colors.purple,
+      Colors.teal,
+      Colors.pink,
+      Colors.amber,
+      Colors.indigo,
+      Colors.cyan,
+      Colors.brown,
+      Colors.deepOrange,
+    ];
+    
+    return colorOptions[random.nextInt(colorOptions.length)];
   }
 
   Future<void> _processKMZFile(String filePath, LayerData layer) async {
@@ -301,35 +240,52 @@ class _MapPageState extends State<MapPage> {
       final bytes = await file.readAsBytes();
       print("File read success, size: ${bytes.length} bytes");
       
-      // Decompress KMZ (which is a ZIP file containing KML)
-      final archive = ZipDecoder().decodeBytes(bytes);
-      print("Archive decoded, contains ${archive.files.length} files");
-      
-      // Find the KML file (usually doc.kml)
-      ArchiveFile? kmlFile;
-      try {
-        kmlFile = archive.findFile('doc.kml') ?? 
-                 archive.files.firstWhere((file) => file.name.toLowerCase().endsWith('.kml'));
-        print("Found KML file: ${kmlFile.name}");
-      } catch (e) {
-        print("No KML file found in archive for layer ${layer.name}");
-        return;
+      // Check if it's a KML file (plain text XML) or KMZ (zip archive)
+      if (filePath.toLowerCase().endsWith('.kml')) {
+        // It's a KML file, no need to decompress
+        final kmlContent = String.fromCharCodes(bytes);
+        await _parseKML(kmlContent, layer);
+      } else {
+        // It's a KMZ file, need to decompress
+        try {
+          // Decompress KMZ (which is a ZIP file containing KML)
+          final archive = ZipDecoder().decodeBytes(bytes);
+          print("Archive decoded, contains ${archive.files.length} files");
+          
+          // Find the KML file (usually doc.kml)
+          ArchiveFile? kmlFile;
+          try {
+            kmlFile = archive.findFile('doc.kml') ?? 
+                     archive.files.firstWhere((file) => file.name.toLowerCase().endsWith('.kml'));
+            print("Found KML file: ${kmlFile.name}");
+          } catch (e) {
+            print("No KML file found in archive for layer ${layer.name}");
+            return;
+          }
+          
+          if (kmlFile == null) {
+            print("KML file is null for layer ${layer.name}");
+            return;
+          }
+          
+          // Get KML content
+          final kmlContent = String.fromCharCodes(kmlFile.content as List<int>);
+          print("KML content length: ${kmlContent.length} characters");
+          
+          // Parse KML for this layer
+          await _parseKML(kmlContent, layer);
+        } catch (e) {
+          print('Error decompressing KMZ file: $e');
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error decompressing KMZ file: $e')),
+          );
+        }
       }
-      
-      if (kmlFile == null) {
-        print("KML file is null for layer ${layer.name}");
-        return;
-      }
-      
-      // Get KML content
-      final kmlContent = String.fromCharCodes(kmlFile.content as List<int>);
-      print("KML content length: ${kmlContent.length} characters");
-      
-      // Parse KML for this layer
-      await _parseKML(kmlContent, layer);
-      
     } catch (e) {
       print('Error processing KMZ file for layer ${layer.name}: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error processing file ${layer.name}: $e')),
+      );
     }
   }
 
@@ -591,17 +547,30 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
+  void _clearAllLayers() {
+    setState(() {
+      _layers.clear();
+    });
+    
+    // Reset map view
+    if (_mapController != null) {
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(_initialCameraPosition),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Multi-Layer KMZ Map Viewer'),
+        title: const Text('KMZ Map Viewer'),
         actions: [
           IconButton(
-            icon: const Icon(Icons.file_open),
-            onPressed: _pickKMZFile,
-            tooltip: 'Open KMZ File',
+            icon: const Icon(Icons.upload_file),
+            onPressed: _pickKMZFiles,
+            tooltip: 'Upload KMZ Files',
           ),
           IconButton(
             icon: const Icon(Icons.layers),
@@ -611,6 +580,11 @@ class _MapPageState extends State<MapPage> {
               });
             },
             tooltip: 'Toggle Layers Panel',
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete),
+            onPressed: _layers.isEmpty ? null : _clearAllLayers,
+            tooltip: 'Clear All Layers',
           ),
         ],
       ),
@@ -632,6 +606,33 @@ class _MapPageState extends State<MapPage> {
               print("Map controller created");
             },
           ),
+          if (_layers.isEmpty)
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.upload_file,
+                    size: 64,
+                    color: Colors.grey.withOpacity(0.5),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Upload KMZ/KML files to display on map',
+                    style: TextStyle(
+                      fontSize: 18,
+                      color: Colors.grey.withOpacity(0.8),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  ElevatedButton.icon(
+                    onPressed: _pickKMZFiles,
+                    icon: const Icon(Icons.file_upload),
+                    label: const Text('Upload Files'),
+                  ),
+                ],
+              ),
+            ),
           if (_layersPanelOpen)
             Positioned(
               top: 0,
@@ -667,29 +668,55 @@ class _MapPageState extends State<MapPage> {
                         ],
                       ),
                     ),
-                    Expanded(
-                      child: ListView.builder(
-                        itemCount: _layers.length,
-                        itemBuilder: (context, index) {
-                          final layer = _layers[index];
-                          return ListTile(
-                            leading: Icon(
-                              Icons.layers,
-                              color: layer.color,
+                    if (_layers.isEmpty)
+                      Expanded(
+                        child: Center(
+                          child: Text(
+                            'No layers loaded',
+                            style: TextStyle(
+                              color: Colors.grey.shade600,
                             ),
-                            title: Text(layer.name),
-                            trailing: Switch(
-                              value: layer.isVisible,
-                              activeColor: layer.color,
-                              onChanged: (value) {
+                          ),
+                        ),
+                      )
+                    else
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: _layers.length,
+                          itemBuilder: (context, index) {
+                            final layer = _layers[index];
+                            return ListTile(
+                              leading: Icon(
+                                Icons.layers,
+                                color: layer.color,
+                              ),
+                              title: Text(
+                                layer.name,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              trailing: Switch(
+                                value: layer.isVisible,
+                                activeColor: layer.color,
+                                onChanged: (value) {
+                                  _toggleLayerVisibility(index);
+                                },
+                              ),
+                              onTap: () {
                                 _toggleLayerVisibility(index);
                               },
-                            ),
-                            onTap: () {
-                              _toggleLayerVisibility(index);
-                            },
-                          );
-                        },
+                            );
+                          },
+                        ),
+                      ),
+                    Padding(
+                      padding: const EdgeInsets.all(8.0),
+                      child: ElevatedButton.icon(
+                        onPressed: _pickKMZFiles,
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add More Layers'),
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(40),
+                        ),
                       ),
                     ),
                   ],
@@ -700,7 +727,20 @@ class _MapPageState extends State<MapPage> {
             Container(
               color: Colors.black.withOpacity(0.5),
               child: const Center(
-                child: CircularProgressIndicator(),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(),
+                    SizedBox(height: 16),
+                    Text(
+                      'Loading Map Data...',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
         ],
@@ -709,9 +749,9 @@ class _MapPageState extends State<MapPage> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
-            onPressed: _pickKMZFile,
-            tooltip: 'Pick KMZ File',
-            heroTag: 'pickFile',
+            onPressed: _pickKMZFiles,
+            tooltip: 'Upload KMZ Files',
+            heroTag: 'uploadFiles',
             child: const Icon(Icons.upload_file),
           ),
           const SizedBox(height: 16),
